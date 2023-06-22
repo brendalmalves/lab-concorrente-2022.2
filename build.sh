@@ -2,7 +2,7 @@
 
 cd src
 go build sequencial.go
-#go build concorrent.go
+#go build concurrent.go
 
 if [ $? -eq 0 ]; then
     echo "Build concluído com sucesso!"
