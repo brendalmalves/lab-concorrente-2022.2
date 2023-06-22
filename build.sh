@@ -1,7 +1,8 @@
 #!/bin/bash
 
+cd src
 go build sequencial.go
-#go build concorrente.go
+#go build concorrent.go
 
 if [ $? -eq 0 ]; then
     echo "Build concluído com sucesso!"
