@@ -60,9 +60,6 @@ func getActors(ids []string) []Actor {
 	var cont = 0
 
 	for _, id := range ids {
-		if cont > 1000 {
-			break
-		}
 		url := ACTORS_URL + id
 		response, err := http.Get(url)
 		if err != nil {

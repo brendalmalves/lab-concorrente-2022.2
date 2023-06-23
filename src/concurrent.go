@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,7 +33,16 @@ type Movie struct {
 const (
 	MOVIES_URL = "http://150.165.15.91:8001/movies/"
 	ACTORS_URL = "http://150.165.15.91:8001/actors/"
+	NUM_GO_ROUTINES = 40
 )
+
+var tr = &http.Transport{
+	MaxConnsPerHost:     80,
+}
+
+var client = &http.Client{
+	Transport: tr,
+}
 
 func main() {
 	start := time.Now()
@@ -42,8 +52,8 @@ func main() {
 	resultChan := make(chan Actor)
 
 	go getIds(idChan)
-	go getActors(idChan, actorChan)
-	go calculateAverageRatings(actorChan, resultChan)
+	go getActors(idChan, actorChan, NUM_GO_ROUTINES)
+	go calculateAverageRatings(actorChan, resultChan, NUM_GO_ROUTINES)
 
 	actors := collectResults(resultChan)
 	sortByAverageMoviesRating(actors)
@@ -52,46 +62,67 @@ func main() {
 		if i >= 10 {
 			break
 		}
-		fmt.Printf("%s: %.2f\n", actor.Name, actor.AverageMoviesRating)
+		fmt.Printf("%d. %s: %.2f\n", i+1, actor.Name, actor.AverageMoviesRating)
 	}
 
 	duration := time.Since(start)
 	fmt.Println("Duração da execução:", duration)
 }
 
-func getActors(idChan <-chan string, actorChan chan<- Actor) {
-	for id := range idChan {
-		url := ACTORS_URL + id
-		response, err := http.Get(url)
-		if err != nil {
-			fmt.Println(err)
-			continue
-		}
-		defer response.Body.Close()
+func getActors(idChan <-chan string, actorChan chan<- Actor, numGoRoutines int) {
+	var wg sync.WaitGroup
 
-		content, err := ioutil.ReadAll(response.Body)
-		if err != nil {
-			fmt.Println(err)
-			continue
-		}
+	for i := 0; i < numGoRoutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for id := range idChan {
+				url := ACTORS_URL + id
 
-		var actor Actor
-		err = json.Unmarshal(content, &actor)
-		if err != nil {
-			fmt.Println(err)
-			continue
-		}
+				response, err := client.Get(url)
+				if err != nil {
+					fmt.Println(err)
+					continue
+				}
+				defer response.Body.Close()
 
-		actorChan <- actor
+				content, err := ioutil.ReadAll(response.Body)
+				if err != nil {
+					fmt.Println(err)
+					continue
+				}
+
+				var actor Actor
+				err = json.Unmarshal(content, &actor)
+				if err != nil {
+					fmt.Println(err)
+					continue
+				}
+
+				actorChan <- actor
+			}
+		}()
 	}
+
+	wg.Wait()
 	close(actorChan)
 }
 
-func calculateAverageRatings(actorChan <-chan Actor, resultChan chan<- Actor) {
-	for actor := range actorChan {
-		actor.AverageMoviesRating = calculateAverageRating(actor.Movies)
-		resultChan <- actor
+func calculateAverageRatings(actorChan <-chan Actor, resultChan chan<- Actor, numGoRoutines int) {
+	var wg sync.WaitGroup
+
+	for i := 0; i < numGoRoutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for actor := range actorChan {
+				actor.AverageMoviesRating = calculateMoviesAverageRating(actor.Movies)
+				resultChan <- actor
+			}
+		}()
 	}
+
+	wg.Wait()
 	close(resultChan)
 }
 
@@ -104,20 +135,20 @@ func collectResults(resultChan <-chan Actor) []Actor {
 }
 
 func getMovie(id string) Movie {
-	var movie Movie
-
 	url := MOVIES_URL + id
-	response, _ := http.Get(url)
+	response, _ := client.Get(url)
+
 	defer response.Body.Close()
 
 	content, _ := ioutil.ReadAll(response.Body)
 
+	var movie Movie
 	_ = json.Unmarshal(content, &movie)
 
 	return movie
 }
 
-func calculateAverageRating(movieIDs []string) float64 {
+func calculateMoviesAverageRating(movieIDs []string) float64 {
 	if len(movieIDs) == 0 {
 		return 0.0
 	}
@@ -128,8 +159,21 @@ func calculateAverageRating(movieIDs []string) float64 {
 	total := 0.0
 	numMovies := len(movieIDs)
 
+	movieChan := make(chan Movie, numMovies)
+	var wg sync.WaitGroup
+
 	for _, movieID := range movieIDs {
-		movie := getMovie(movieID)
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			movieChan <- getMovie(id)
+		}(movieID)
+	}
+
+	wg.Wait()
+	close(movieChan)
+
+	for movie := range movieChan {
 		total += movie.AverageRating
 	}
 
